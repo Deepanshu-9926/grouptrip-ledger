@@ -1,34 +1,26 @@
 require('dotenv').config();
 
 const express = require('express');
-const pool = require('./db/db');
+
+const tripsRoutes = require('./api/routes/trips.routes');
+const participantsRoutes = require('./api/routes/participants.routes');
+const bookingsRoutes = require('./api/routes/bookings.routes');
+const paymentsRoutes = require('./api/routes/payments.routes');
 
 const app = express();
 
 const PORT = process.env.PORT || 5000;
 
+app.use(express.json());
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
 });
 
-app.get('/db-test', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT NOW() AS current_time');
-
-        res.json({
-            status: 'ok',
-            database: 'connected',
-            time: result.rows[0].current_time
-        });
-    } catch (error) {
-        console.error('Database connection error:', error);
-
-        res.status(500).json({
-            status: 'error',
-            database: 'connection failed'
-        });
-    }
-});
+app.use('/api/trips', tripsRoutes);
+app.use('/api/participants', participantsRoutes);
+app.use('/api/bookings', bookingsRoutes);
+app.use('/api/payments', paymentsRoutes);
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
