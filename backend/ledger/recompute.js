@@ -1,13 +1,73 @@
 const pool = require('../db/db');
 
 /**
+ * Calculates each participant's share of a cost, given a cost-sharing
+ * configuration. Pure function — no database access — so it can be
+ * unit-tested directly.
+ *
+ * @param {number} effectiveBookingCost
+ * @param {string[]} participantIds - current participant set, in order
+ * @param {object} [costSharing] - e.g. { mode: 'equal' } or { mode: 'tiered', weights: {...} }
+ * @returns {object} map of participantId -> share amount (2 decimal places)
+ */
+function calculateShares(effectiveBookingCost, participantIds, costSharing) {
+  if (!participantIds || participantIds.length === 0) {
+    return {};
+  }
+
+  // Unknown/missing mode falls back to equal split.
+  const mode = costSharing && costSharing.mode === 'tiered' ? 'tiered' : 'equal';
+  const rawWeights = (mode === 'tiered' && costSharing.weights) ? costSharing.weights : {};
+
+  // Resolve one weight per current participant. Missing or invalid
+  // (non-positive / non-numeric) weights default to 1, and equal mode
+  // simply uses a weight of 1 for everyone.
+  const weights = participantIds.map((participantId) => {
+    if (mode === 'equal') {
+      return 1;
+    }
+    const rawWeight = Number(rawWeights[participantId]);
+    if (!Number.isFinite(rawWeight) || rawWeight <= 0) {
+      return 1;
+    }
+    return rawWeight;
+  });
+
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+
+  // Work in integer cents to keep rounding accurate and predictable.
+  const totalCostCents = Math.round(effectiveBookingCost * 100);
+
+  const shareCents = participantIds.map((_, index) => {
+    const weightShare = weights[index] / totalWeight;
+    return Math.round(totalCostCents * weightShare);
+  });
+
+  // Rounding each share independently can leave a 1-2 cent gap versus the
+  // total cost — correct it by adjusting the last participant's share.
+  const sumOfShareCents = shareCents.reduce((sum, c) => sum + c, 0);
+  const roundingDifference = totalCostCents - sumOfShareCents;
+  if (roundingDifference !== 0 && shareCents.length > 0) {
+    shareCents[shareCents.length - 1] += roundingDifference;
+  }
+
+  const shares = {};
+  participantIds.forEach((participantId, index) => {
+    shares[participantId] = shareCents[index] / 100;
+  });
+
+  return shares;
+}
+
+/**
  * Recomputes the current financial state of a booking by replaying its
  * full event history from the events table.
  *
  * @param {string} bookingId
  * @returns {object} {
  *   booking_id, booking_total, total_refunded, effective_booking_cost,
- *   status, cancelled, participant_ids, shares, payments, remaining_balance
+ *   status, cancelled, cost_sharing, participant_ids, shares, payments,
+ *   remaining_balance
  * }
  */
 async function recomputeBooking(bookingId) {
@@ -36,12 +96,13 @@ async function recomputeBooking(bookingId) {
   const events = eventsResult.rows;
 
   // 3. Replay events to derive current participant set, payment totals,
-  //    refunds, cost modifications, and cancellation state
+  //    refunds, cost modifications, cancellation state, and cost-sharing config
   const currentParticipants = new Set();
   const paymentsByParticipant = {};
   let totalRefunded = 0;
   let currentBookingCost = Number(booking.total_cost);
   let isCancelled = false;
+  let costSharingConfig = null;
 
   for (const event of events) {
     const payload = event.payload || {};
@@ -80,8 +141,11 @@ async function recomputeBooking(bookingId) {
         break;
 
       case 'booking_added':
-        // No financial or membership effect on its own — booking creation
-        // is represented separately by participant_added_to_booking events.
+        // Booking creation itself has no direct financial/membership effect,
+        // but it may carry the cost-sharing configuration for this booking.
+        if (payload.cost_sharing) {
+          costSharingConfig = payload.cost_sharing;
+        }
         break;
 
       default:
@@ -94,27 +158,26 @@ async function recomputeBooking(bookingId) {
   const participantIds = Array.from(currentParticipants);
 
   // 4. Effective cost after modifications, refunds, and cancellation.
-  //    A cancelled booking always has an effective cost of 0, regardless of
-  //    modifications or refunds — but currentBookingCost itself is preserved
-  //    below (in booking_total) for audit purposes.
   const effectiveBookingCost = isCancelled
     ? 0
     : Math.max(0, currentBookingCost - totalRefunded);
 
-  // 5. Calculate equal shares from the effective cost, guarding against
-  //    division by zero. A cancelled booking has no shares owed.
-  const shares = {};
-  if (!isCancelled && participantIds.length > 0) {
-    const sharePerParticipant = effectiveBookingCost / participantIds.length;
-    for (const participantId of participantIds) {
-      shares[participantId] = sharePerParticipant;
-    }
-  }
+  // 5. Calculate shares using whatever cost-sharing mode is configured.
+  //    A cancelled booking has no shares owed, regardless of mode.
+  const shares = isCancelled
+    ? {}
+    : calculateShares(effectiveBookingCost, participantIds, costSharingConfig);
 
   // 6. Total paid across all payment_logged events — preserved even if the
   //    booking is later cancelled, since payment history must never be lost.
   const totalPaid = Object.values(paymentsByParticipant).reduce((sum, amount) => sum + amount, 0);
   const remainingBalance = effectiveBookingCost - totalPaid;
+
+  // Resolve the cost_sharing field for the output — reflects the same
+  // fallback-to-equal rule used inside calculateShares.
+  const resolvedCostSharing = (costSharingConfig && costSharingConfig.mode === 'tiered')
+    ? { mode: 'tiered', weights: costSharingConfig.weights || {} }
+    : { mode: 'equal' };
 
   return {
     booking_id: bookingId,
@@ -123,6 +186,7 @@ async function recomputeBooking(bookingId) {
     effective_booking_cost: effectiveBookingCost,
     status: isCancelled ? 'cancelled' : 'active',
     cancelled: isCancelled,
+    cost_sharing: resolvedCostSharing,
     participant_ids: participantIds,
     shares,
     payments: paymentsByParticipant,
@@ -130,4 +194,4 @@ async function recomputeBooking(bookingId) {
   };
 }
 
-module.exports = { recomputeBooking };
+module.exports = { recomputeBooking, calculateShares };
