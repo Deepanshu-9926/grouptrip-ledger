@@ -276,6 +276,134 @@ async function removeParticipantFromBooking(req, res) {
   }
 }
 
+// POST /api/bookings/:bookingId/cancel
+// Event-aware: bookings.status is updated to 'cancelled' and a
+// booking_cancelled event is recorded together in a single transaction.
+async function cancelBooking(req, res) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const bookingCheck = await client.query('SELECT * FROM bookings WHERE id = $1', [req.params.bookingId]);
+    if (bookingCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const booking = bookingCheck.rows[0];
+
+    if (booking.status === 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Booking is already cancelled' });
+    }
+
+    const updateResult = await client.query(
+      `UPDATE bookings
+       SET status = 'cancelled'
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.bookingId]
+    );
+
+    const updatedBooking = updateResult.rows[0];
+    const cancelledAt = new Date().toISOString();
+
+    // Same transaction, same client — if this throws, the status update
+    // above gets rolled back too.
+    await addEvent(
+      req.params.bookingId,
+      'booking_cancelled',
+      { booking_id: req.params.bookingId, cancelled_at: cancelledAt },
+      client
+    );
+
+    await client.query('COMMIT');
+
+    res.status(200).json({ data: updatedBooking });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Failed to cancel booking' });
+  } finally {
+    client.release();
+  }
+}
+
+// POST /api/bookings/:bookingId/refund
+// Event-aware: does not touch any table directly (no refunds table exists),
+// it only records a refund_issued event, which recompute.js already knows
+// how to fold into the effective booking cost.
+async function issueRefund(req, res) {
+  const { amount } = req.body;
+
+  if (amount === undefined || typeof amount !== 'number' || isNaN(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'amount is required and must be a number greater than 0' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const bookingCheck = await client.query('SELECT * FROM bookings WHERE id = $1', [req.params.bookingId]);
+    if (bookingCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const booking = bookingCheck.rows[0];
+    const refundableAmount = Number(booking.refundable_amount);
+
+    // Sum every refund_issued event already recorded for this booking, so we
+    // know how much of the refundable amount has already been used up.
+    const alreadyRefundedResult = await client.query(
+      `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0) AS total_refunded
+       FROM events
+       WHERE booking_id = $1 AND event_type = 'refund_issued'`,
+      [req.params.bookingId]
+    );
+
+    const alreadyRefunded = Number(alreadyRefundedResult.rows[0].total_refunded);
+    const remainingRefundable = refundableAmount - alreadyRefunded;
+
+    if (amount > remainingRefundable) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Refund exceeds remaining refundable amount. Remaining refundable: ${remainingRefundable}`
+      });
+    }
+
+    const refundedAt = new Date().toISOString();
+
+    // No refunds table exists (and none is being added) — the event itself
+    // is the record. recompute.js already sums refund_issued events to
+    // derive effective_booking_cost.
+    await addEvent(
+      req.params.bookingId,
+      'refund_issued',
+      { amount, refunded_at: refundedAt },
+      client
+    );
+
+    await client.query('COMMIT');
+
+    res.status(200).json({
+      data: {
+        booking_id: req.params.bookingId,
+        amount,
+        refunded_at: refundedAt
+      }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Failed to issue refund' });
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   getBooking,
   updateBooking,
@@ -283,5 +411,7 @@ module.exports = {
   listPaymentsForBooking,
   createPaymentForBooking,
   addParticipantToBooking,
-  removeParticipantFromBooking
+  removeParticipantFromBooking,
+  cancelBooking,
+  issueRefund
 };
