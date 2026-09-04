@@ -7,7 +7,7 @@ const pool = require('../db/db');
  * @param {string} bookingId
  * @returns {object} {
  *   booking_id, booking_total, total_refunded, effective_booking_cost,
- *   participant_ids, shares, payments, remaining_balance
+ *   status, cancelled, participant_ids, shares, payments, remaining_balance
  * }
  */
 async function recomputeBooking(bookingId) {
@@ -26,7 +26,6 @@ async function recomputeBooking(bookingId) {
   }
 
   const booking = bookingResult.rows[0];
-  const bookingTotal = Number(booking.total_cost);
 
   // 2. Fetch all events for this booking, replayed in strict insertion order
   const eventsResult = await pool.query(
@@ -36,10 +35,13 @@ async function recomputeBooking(bookingId) {
 
   const events = eventsResult.rows;
 
-  // 3. Replay events to derive current participant set, payment totals, and refunds
+  // 3. Replay events to derive current participant set, payment totals,
+  //    refunds, cost modifications, and cancellation state
   const currentParticipants = new Set();
   const paymentsByParticipant = {};
   let totalRefunded = 0;
+  let currentBookingCost = Number(booking.total_cost);
+  let isCancelled = false;
 
   for (const event of events) {
     const payload = event.payload || {};
@@ -66,14 +68,20 @@ async function recomputeBooking(bookingId) {
         break;
       }
 
+      case 'booking_cost_modified': {
+        if (payload.total_cost !== undefined) {
+          currentBookingCost = Number(payload.total_cost);
+        }
+        break;
+      }
+
+      case 'booking_cancelled':
+        isCancelled = true;
+        break;
+
       case 'booking_added':
         // No financial or membership effect on its own — booking creation
         // is represented separately by participant_added_to_booking events.
-        break;
-
-      // Recognized but not yet implemented financially — ignored for now.
-      case 'booking_cancelled':
-      case 'booking_cost_modified':
         break;
 
       default:
@@ -85,27 +93,36 @@ async function recomputeBooking(bookingId) {
 
   const participantIds = Array.from(currentParticipants);
 
-  // 4. Effective cost after refunds — never allowed to go below zero
-  const effectiveBookingCost = Math.max(0, bookingTotal - totalRefunded);
+  // 4. Effective cost after modifications, refunds, and cancellation.
+  //    A cancelled booking always has an effective cost of 0, regardless of
+  //    modifications or refunds — but currentBookingCost itself is preserved
+  //    below (in booking_total) for audit purposes.
+  const effectiveBookingCost = isCancelled
+    ? 0
+    : Math.max(0, currentBookingCost - totalRefunded);
 
-  // 5. Calculate equal shares from the effective cost, guarding against division by zero
+  // 5. Calculate equal shares from the effective cost, guarding against
+  //    division by zero. A cancelled booking has no shares owed.
   const shares = {};
-  if (participantIds.length > 0) {
+  if (!isCancelled && participantIds.length > 0) {
     const sharePerParticipant = effectiveBookingCost / participantIds.length;
     for (const participantId of participantIds) {
       shares[participantId] = sharePerParticipant;
     }
   }
 
-  // 6. Total paid across all payment_logged events (unchanged from before)
+  // 6. Total paid across all payment_logged events — preserved even if the
+  //    booking is later cancelled, since payment history must never be lost.
   const totalPaid = Object.values(paymentsByParticipant).reduce((sum, amount) => sum + amount, 0);
   const remainingBalance = effectiveBookingCost - totalPaid;
 
   return {
     booking_id: bookingId,
-    booking_total: bookingTotal,
+    booking_total: currentBookingCost, // reflects modifications; preserved even after cancellation
     total_refunded: totalRefunded,
     effective_booking_cost: effectiveBookingCost,
+    status: isCancelled ? 'cancelled' : 'active',
+    cancelled: isCancelled,
     participant_ids: participantIds,
     shares,
     payments: paymentsByParticipant,

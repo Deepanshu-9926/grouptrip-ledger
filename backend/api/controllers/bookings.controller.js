@@ -16,6 +16,9 @@ async function getBooking(req, res) {
 }
 
 // PUT /api/bookings/:id
+// Event-aware: if total_cost actually changes, the update and a
+// booking_cost_modified event happen together in one transaction.
+// status cannot be set to 'cancelled' here — use POST /:bookingId/cancel.
 async function updateBooking(req, res) {
   const {
     category, vendor_name, total_cost, booking_datetime,
@@ -26,8 +29,27 @@ async function updateBooking(req, res) {
     return res.status(400).json({ error: 'category, vendor_name, total_cost and booking_datetime are required' });
   }
 
+  if (status === 'cancelled') {
+    return res.status(400).json({
+      error: 'Cannot set status to cancelled here. Use POST /api/bookings/:bookingId/cancel instead.'
+    });
+  }
+
+  const client = await pool.connect();
+
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    const existingResult = await client.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
+    if (existingResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const existingBooking = existingResult.rows[0];
+    const costIsChanging = Number(existingBooking.total_cost) !== Number(total_cost);
+
+    const updateResult = await client.query(
       `UPDATE bookings
        SET category = $1, vendor_name = $2, total_cost = $3, booking_datetime = $4,
            refund_policy = COALESCE($5, refund_policy),
@@ -42,13 +64,29 @@ async function updateBooking(req, res) {
         req.params.id
       ]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Booking not found' });
+
+    const updatedBooking = updateResult.rows[0];
+
+    // Only log an event if total_cost genuinely changed — avoids noise in
+    // the event log for no-op updates (e.g. re-submitting the same value).
+    if (costIsChanging) {
+      await addEvent(
+        req.params.id,
+        'booking_cost_modified',
+        { total_cost: Number(total_cost) },
+        client
+      );
     }
-    res.status(200).json({ data: result.rows[0] });
+
+    await client.query('COMMIT');
+
+    res.status(200).json({ data: updatedBooking });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error(err);
     res.status(400).json({ error: 'Failed to update booking — check your input values' });
+  } finally {
+    client.release();
   }
 }
 
