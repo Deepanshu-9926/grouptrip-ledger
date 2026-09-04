@@ -1,5 +1,5 @@
 const pool = require('../../db/db');
-
+const { addEvent } = require('../../ledger/eventLog');
 // GET /api/trips
 async function listTrips(req, res) {
   try {
@@ -147,42 +147,102 @@ async function listBookingsForTrip(req, res) {
   }
 }
 
+function resolveCostSharing(rawCostSharing) {
+  if (!rawCostSharing || typeof rawCostSharing !== 'object') {
+    return { mode: 'equal' };
+  }
+
+  if (rawCostSharing.mode === 'tiered') {
+    const weights = (rawCostSharing.weights && typeof rawCostSharing.weights === 'object')
+      ? rawCostSharing.weights
+      : {};
+
+    return { mode: 'tiered', weights };
+  }
+
+  return { mode: 'equal' };
+}
+
 // POST /api/trips/:tripId/bookings
 async function createBookingForTrip(req, res) {
   const {
     category, vendor_name, total_cost, booking_datetime,
-    refund_policy, refundable_amount, cancellation_deadline, status
+    refund_policy, refundable_amount, cancellation_deadline, status, cost_sharing
   } = req.body;
 
   if (!category || !vendor_name || total_cost === undefined || !booking_datetime) {
-    return res.status(400).json({ error: 'category, vendor_name, total_cost and booking_datetime are required' });
+    return res.status(400).json({
+      error: 'category, vendor_name, total_cost and booking_datetime are required'
+    });
   }
 
+  const resolvedCostSharing = resolveCostSharing(cost_sharing);
+
+  const client = await pool.connect();
+
   try {
-    const tripCheck = await pool.query('SELECT id FROM trips WHERE id = $1', [req.params.tripId]);
+    await client.query('BEGIN');
+
+    const tripCheck = await client.query(
+      'SELECT id FROM trips WHERE id = $1',
+      [req.params.tripId]
+    );
+
     if (tripCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Trip not found' });
     }
 
-    const result = await pool.query(
+    const bookingResult = await client.query(
       `INSERT INTO bookings
-        (trip_id, category, vendor_name, total_cost, booking_datetime, refund_policy, refundable_amount, cancellation_deadline, status)
+        (trip_id, category, vendor_name, total_cost, booking_datetime,
+         refund_policy, refundable_amount, cancellation_deadline, status)
        VALUES
-        ($1, $2, $3, $4, $5, COALESCE($6, 'non_refundable'), COALESCE($7, 0), $8, COALESCE($9, 'active'))
+        ($1, $2, $3, $4, $5, COALESCE($6, 'non_refundable'),
+         COALESCE($7, 0), $8, COALESCE($9, 'active'))
        RETURNING *`,
       [
-        req.params.tripId, category, vendor_name, total_cost, booking_datetime,
-        refund_policy, refundable_amount, cancellation_deadline || null, status
+        req.params.tripId,
+        category,
+        vendor_name,
+        total_cost,
+        booking_datetime,
+        refund_policy,
+        refundable_amount,
+        cancellation_deadline || null,
+        status
       ]
     );
-    res.status(201).json({ data: result.rows[0] });
+
+    const newBooking = bookingResult.rows[0];
+
+    await addEvent(
+      newBooking.id,
+      'booking_added',
+      {
+        booking_id: newBooking.id,
+        cost_sharing: resolvedCostSharing
+      },
+      client
+    );
+
+    await client.query('COMMIT');
+
+    res.status(201).json({ data: newBooking });
+
   } catch (err) {
-    // Catches CHECK constraint failures too, e.g. invalid category or refundable_amount > total_cost
+    await client.query('ROLLBACK');
+
     console.error(err);
-    res.status(400).json({ error: 'Failed to create booking — check your input values' });
+
+    res.status(400).json({
+      error: 'Failed to create booking — check your input values'
+    });
+
+  } finally {
+    client.release();
   }
 }
-
 module.exports = {
   listTrips,
   getTrip,
