@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { recomputeBooking } = require('./recompute');
 
-const SAMPLE_BOOKING_ID = '33333333-3333-3333-3333-333333333333';
+const SAMPLE_BOOKING_ID = '96274470-c86c-4763-9449-c142f64bd350';
 
 async function run() {
   try {
