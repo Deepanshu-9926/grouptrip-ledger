@@ -10,7 +10,7 @@ const ALLOWED_EVENT_TYPES = [
     'booking_cost_modified'
 ];
 
-async function addEvent(bookingId, eventType, payload) {
+async function addEvent(bookingId, eventType, payload, client = pool) {
     if (!bookingId) {
         throw new Error('addEvent: bookingId is required');
     }
@@ -21,7 +21,8 @@ async function addEvent(bookingId, eventType, payload) {
 
     if (!ALLOWED_EVENT_TYPES.includes(eventType)) {
         throw new Error(
-            `addEvent: "${eventType}" is not a valid event type. Allowed types: ${ALLOWED_EVENT_TYPES.join(', ')}`
+            `addEvent: "${eventType}" is not a valid event type. ` +
+            `Allowed types: ${ALLOWED_EVENT_TYPES.join(', ')}`
         );
     }
 
@@ -31,7 +32,7 @@ async function addEvent(bookingId, eventType, payload) {
         );
     }
 
-    const result = await pool.query(
+    const result = await client.query(
         `INSERT INTO events (booking_id, event_type, payload)
          VALUES ($1, $2, $3)
          RETURNING *`,
@@ -41,4 +42,6 @@ async function addEvent(bookingId, eventType, payload) {
     return result.rows[0];
 }
 
-module.exports = { addEvent };
+module.exports = {
+    addEvent
+};
