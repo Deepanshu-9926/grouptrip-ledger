@@ -1,110 +1,211 @@
-require('dotenv').config();
-
 const pool = require('../db/db');
 
-const BASE_URL = `http://localhost:${process.env.PORT || 5000}`;
+const BASE_URL = 'http://localhost:5000';
 
-// Existing seed data
-const SAMPLE_TRIP_ID = '11111111-1111-1111-1111-111111111111';
-const SAMPLE_PARTICIPANT_ID = '22222222-2222-2222-2222-222222222221'; // Aditi
+async function runTests() {
+    // Create a fresh booking for this test run
+    const bookingResponse = await fetch(
+        `${BASE_URL}/api/trips/11111111-1111-1111-1111-111111111111/bookings`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                category: 'Accommodation',
+                vendor_name: 'Integration Test Vendor',
+                total_cost: 999,
+                booking_datetime: '2026-09-10T10:00:00Z',
+                refund_policy: 'fully_refundable',
+                refundable_amount: 999
+            })
+        }
+    );
 
-async function eventExists(bookingId, eventType) {
-  const result = await pool.query(
-    'SELECT * FROM events WHERE booking_id = $1 AND event_type = $2 ORDER BY sequence DESC LIMIT 1',
-    [bookingId, eventType]
-  );
-  return result.rows[0] || null;
-}
+    if (!bookingResponse.ok) {
+        throw new Error(
+            `Failed to create booking: ${await bookingResponse.text()}`
+        );
+    }
 
-async function testBookingCreationCreatesEvent() {
-  const response = await fetch(`${BASE_URL}/api/trips/${SAMPLE_TRIP_ID}/bookings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      category: 'Other',
-      vendor_name: 'Integration Test Vendor',
-      total_cost: 999,
-      booking_datetime: '2026-12-14T09:00:00+05:30'
-    })
-  });
+    const bookingResult = await bookingResponse.json();
+    const bookingId = bookingResult.data.id;
 
-  const body = await response.json();
+    // A. Booking creation -> booking_added event
+    const bookingEventCheck = await pool.query(
+        `SELECT * FROM events
+         WHERE booking_id = $1
+         AND event_type = 'booking_added'
+         LIMIT 1`,
+        [bookingId]
+    );
 
-  if (response.status !== 201) {
-    throw new Error(`Expected 201 creating booking, got ${response.status}: ${JSON.stringify(body)}`);
-  }
+    if (bookingEventCheck.rows.length === 0) {
+        throw new Error('A. booking_added event was not created');
+    }
 
-  const bookingId = body.data.id;
-  const event = await eventExists(bookingId, 'booking_added');
+    console.log(
+        'A. PASSED: booking creation created a booking_added event'
+    );
 
-  if (!event) {
-    throw new Error('FAILED: no booking_added event found after creating a booking');
-  }
 
-  console.log('A. PASSED: booking creation created a booking_added event');
-  return bookingId;
-}
+    // B. Add participant -> participant_added_to_booking event
+    const participantId =
+        '22222222-2222-2222-2222-222222222222';
 
-async function testAddParticipantCreatesEvent(bookingId) {
-  const response = await fetch(`${BASE_URL}/api/bookings/${bookingId}/participants`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ participant_id: SAMPLE_PARTICIPANT_ID })
-  });
+    const participantResponse = await fetch(
+        `${BASE_URL}/api/bookings/${bookingId}/participants`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                participant_id: participantId
+            })
+        }
+    );
 
-  const body = await response.json();
+    if (!participantResponse.ok) {
+        throw new Error(
+            `B. Failed to add participant: ${await participantResponse.text()}`
+        );
+    }
 
-  if (response.status !== 201) {
-    throw new Error(`Expected 201 adding participant, got ${response.status}: ${JSON.stringify(body)}`);
-  }
+    const participantEventCheck = await pool.query(
+        `SELECT * FROM events
+         WHERE booking_id = $1
+         AND event_type = 'participant_added_to_booking'
+         LIMIT 1`,
+        [bookingId]
+    );
 
-  const event = await eventExists(bookingId, 'participant_added_to_booking');
+    if (participantEventCheck.rows.length === 0) {
+        throw new Error(
+            'B. participant_added_to_booking event was not created'
+        );
+    }
 
-  if (!event) {
-    throw new Error('FAILED: no participant_added_to_booking event found');
-  }
+    console.log(
+        'B. PASSED: adding a participant created a participant_added_to_booking event'
+    );
 
-  console.log('B. PASSED: adding a participant created a participant_added_to_booking event');
-}
 
-async function testPaymentCreatesEvent(bookingId) {
-  const response = await fetch(`${BASE_URL}/api/bookings/${bookingId}/payments`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      payer_id: SAMPLE_PARTICIPANT_ID,
-      amount: 999,
-      paid_at: '2026-12-01T10:00:00+05:30'
-    })
-  });
+    // C. Payment -> payment_logged event
+    const paymentResponse = await fetch(
+        `${BASE_URL}/api/bookings/${bookingId}/payments`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                payer_participant_id:
+                    '22222222-2222-2222-2222-222222222221',
+                amount: 500,
+                paid_at: '2026-09-06T10:00:00Z'
+            })
+        }
+    );
 
-  const body = await response.json();
+    if (!paymentResponse.ok) {
+        throw new Error(
+            `C. Failed to create payment: ${await paymentResponse.text()}`
+        );
+    }
 
-  if (response.status !== 201) {
-    throw new Error(`Expected 201 creating payment, got ${response.status}: ${JSON.stringify(body)}`);
-  }
+    const paymentEventCheck = await pool.query(
+        `SELECT * FROM events
+         WHERE booking_id = $1
+         AND event_type = 'payment_logged'
+         LIMIT 1`,
+        [bookingId]
+    );
 
-  const event = await eventExists(bookingId, 'payment_logged');
+    if (paymentEventCheck.rows.length === 0) {
+        throw new Error(
+            'C. payment_logged event was not created'
+        );
+    }
 
-  if (!event) {
-    throw new Error('FAILED: no payment_logged event found after logging a payment');
-  }
+    console.log(
+        'C. PASSED: logging a payment created a payment_logged event'
+    );
 
-  console.log('C. PASSED: logging a payment created a payment_logged event');
-}
 
-async function run() {
-  try {
-    const bookingId = await testBookingCreationCreatesEvent();
-    await testAddParticipantCreatesEvent(bookingId);
-    await testPaymentCreatesEvent(bookingId);
-    console.log('All API event-integration tests passed.');
-  } catch (err) {
-    console.error(err.message);
-    process.exitCode = 1;
-  } finally {
+    // D. Remove participant -> participant_removed_from_booking event
+    const removeResponse = await fetch(
+        `${BASE_URL}/api/bookings/${bookingId}/participants/${participantId}`,
+        {
+            method: 'DELETE'
+        }
+    );
+
+    if (!removeResponse.ok) {
+        throw new Error(
+            `D. Failed to remove participant: ${await removeResponse.text()}`
+        );
+    }
+
+    const removeEventCheck = await pool.query(
+        `SELECT * FROM events
+         WHERE booking_id = $1
+         AND event_type = 'participant_removed_from_booking'
+         LIMIT 1`,
+        [bookingId]
+    );
+
+    if (removeEventCheck.rows.length === 0) {
+        throw new Error(
+            'D. participant_removed_from_booking event was not created'
+        );
+    }
+
+    console.log(
+        'D. PASSED: removing a participant created a participant_removed_from_booking event'
+    );
+
+
+    // E. Cancel booking -> booking_cancelled event
+    const cancelResponse = await fetch(
+        `${BASE_URL}/api/bookings/${bookingId}/cancel`,
+        {
+            method: 'POST'
+        }
+    );
+
+    if (!cancelResponse.ok) {
+        throw new Error(
+            `E. Failed to cancel booking: ${await cancelResponse.text()}`
+        );
+    }
+
+    const cancelEventCheck = await pool.query(
+        `SELECT * FROM events
+         WHERE booking_id = $1
+         AND event_type = 'booking_cancelled'
+         LIMIT 1`,
+        [bookingId]
+    );
+
+    if (cancelEventCheck.rows.length === 0) {
+        throw new Error(
+            'E. booking_cancelled event was not created'
+        );
+    }
+
+    console.log(
+        'E. PASSED: cancelling a booking created a booking_cancelled event'
+    );
+
+
+    console.log('\nAll API event-integration tests passed.');
+
     await pool.end();
-  }
 }
 
-run();
+runTests().catch(async (err) => {
+    console.error('\nTEST FAILED:', err);
+    await pool.end();
+    process.exit(1);
+});

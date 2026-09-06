@@ -7,6 +7,7 @@ const bookingsController = require('../controllers/bookings.controller');
 router.get('/:id', bookingsController.getBooking);
 router.put('/:id', bookingsController.updateBooking);
 router.delete('/:id', bookingsController.deleteBooking);
+router.post('/:id/cancel', bookingsController.cancelBooking);
 
 // Payments for a booking
 router.get('/:bookingId/payments', bookingsController.listPaymentsForBooking);

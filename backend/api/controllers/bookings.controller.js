@@ -1,11 +1,17 @@
 const pool = require('../../db/db');
 const { addEvent } = require('../../ledger/eventLog');
 
-// GET /api/bookings/:id
+
+// ============================================================
+// GET BOOKING
+// ============================================================
+
 async function getBooking(req, res) {
     try {
         const result = await pool.query(
-            'SELECT * FROM bookings WHERE id = $1',
+            `SELECT *
+             FROM bookings
+             WHERE id = $1`,
             [req.params.id]
         );
 
@@ -18,7 +24,6 @@ async function getBooking(req, res) {
         res.status(200).json({
             data: result.rows[0]
         });
-
     } catch (err) {
         console.error(err);
 
@@ -29,7 +34,10 @@ async function getBooking(req, res) {
 }
 
 
-// PUT /api/bookings/:id
+// ============================================================
+// UPDATE BOOKING
+// ============================================================
+
 async function updateBooking(req, res) {
     const {
         category,
@@ -53,8 +61,32 @@ async function updateBooking(req, res) {
         });
     }
 
+    const client = await pool.connect();
+
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        // Get the existing booking first so we can compare
+        // the old cost with the new cost.
+        const existingResult = await client.query(
+            `SELECT *
+             FROM bookings
+             WHERE id = $1`,
+            [req.params.id]
+        );
+
+        if (existingResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+
+            return res.status(404).json({
+                error: 'Booking not found'
+            });
+        }
+
+        const existingBooking = existingResult.rows[0];
+
+        // Update the booking.
+        const result = await client.query(
             `UPDATE bookings
              SET category = $1,
                  vendor_name = $2,
@@ -79,31 +111,53 @@ async function updateBooking(req, res) {
             ]
         );
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({
-                error: 'Booking not found'
-            });
+        // Create a ledger event only if the cost actually changed.
+        if (
+            Number(existingBooking.total_cost) !==
+            Number(total_cost)
+        ) {
+            await addEvent(
+                req.params.id,
+                'booking_cost_modified',
+                {
+                    booking_id: req.params.id,
+                    previous_total_cost: Number(existingBooking.total_cost),
+                    total_cost: Number(total_cost),
+                    modified_at: new Date().toISOString()
+                },
+                client
+            );
         }
+
+        await client.query('COMMIT');
 
         res.status(200).json({
             data: result.rows[0]
         });
-
     } catch (err) {
+        await client.query('ROLLBACK');
+
         console.error(err);
 
         res.status(400).json({
             error: 'Failed to update booking — check your input values'
         });
+    } finally {
+        client.release();
     }
 }
 
 
-// DELETE /api/bookings/:id
+// ============================================================
+// DELETE BOOKING
+// ============================================================
+
 async function deleteBooking(req, res) {
     try {
         const result = await pool.query(
-            'DELETE FROM bookings WHERE id = $1 RETURNING id',
+            `DELETE FROM bookings
+             WHERE id = $1
+             RETURNING *`,
             [req.params.id]
         );
 
@@ -114,22 +168,23 @@ async function deleteBooking(req, res) {
         }
 
         res.status(200).json({
-            data: {
-                id: result.rows[0].id
-            }
+            message: 'Booking deleted successfully',
+            data: result.rows[0]
         });
-
     } catch (err) {
         console.error(err);
 
-        res.status(500).json({
+        res.status(400).json({
             error: 'Failed to delete booking'
         });
     }
 }
 
 
-// GET /api/bookings/:bookingId/payments
+// ============================================================
+// LIST PAYMENTS FOR BOOKING
+// ============================================================
+
 async function listPaymentsForBooking(req, res) {
     try {
         const result = await pool.query(
@@ -143,7 +198,6 @@ async function listPaymentsForBooking(req, res) {
         res.status(200).json({
             data: result.rows
         });
-
     } catch (err) {
         console.error(err);
 
@@ -154,17 +208,23 @@ async function listPaymentsForBooking(req, res) {
 }
 
 
-// POST /api/bookings/:bookingId/payments
+// ============================================================
+// CREATE PAYMENT FOR BOOKING
+// ============================================================
+
 async function createPaymentForBooking(req, res) {
     const {
-        payer_id,
+        payer_participant_id,
         amount,
         paid_at
     } = req.body;
 
-    if (!payer_id || amount === undefined || !paid_at) {
+    if (
+        !payer_participant_id ||
+        amount === undefined
+    ) {
         return res.status(400).json({
-            error: 'payer_id, amount and paid_at are required'
+            error: 'payer_participant_id and amount are required'
         });
     }
 
@@ -173,13 +233,15 @@ async function createPaymentForBooking(req, res) {
     try {
         await client.query('BEGIN');
 
-        // Check that booking exists
-        const bookingCheck = await client.query(
-            'SELECT id FROM bookings WHERE id = $1',
+        // Check booking exists.
+        const bookingResult = await client.query(
+            `SELECT id
+             FROM bookings
+             WHERE id = $1`,
             [req.params.bookingId]
         );
 
-        if (bookingCheck.rows.length === 0) {
+        if (bookingResult.rows.length === 0) {
             await client.query('ROLLBACK');
 
             return res.status(404).json({
@@ -187,74 +249,80 @@ async function createPaymentForBooking(req, res) {
             });
         }
 
-        // Check that payer exists
-        const payerCheck = await client.query(
-            'SELECT id FROM participants WHERE id = $1',
-            [payer_id]
+        // Check participant exists.
+        const participantResult = await client.query(
+            `SELECT id
+             FROM participants
+             WHERE id = $1`,
+            [payer_participant_id]
         );
 
-        if (payerCheck.rows.length === 0) {
+        if (participantResult.rows.length === 0) {
             await client.query('ROLLBACK');
 
-            return res.status(400).json({
-                error: 'payer_id does not match an existing participant'
+            return res.status(404).json({
+                error: 'Participant not found'
             });
         }
 
-        // Create payment
-        const result = await client.query(
+        // IMPORTANT:
+        // API uses payer_participant_id.
+        // Database column is payer_id.
+        const paymentResult = await client.query(
             `INSERT INTO payments
-                (payer_id, booking_id, amount, paid_at)
+                (booking_id, payer_id, amount, paid_at)
              VALUES
-                ($1, $2, $3, $4)
+                ($1, $2, $3, COALESCE($4, NOW()))
              RETURNING *`,
             [
-                payer_id,
                 req.params.bookingId,
+                payer_participant_id,
                 amount,
-                paid_at
+                paid_at || null
             ]
         );
 
-        const payment = result.rows[0];
-
-        // Create ledger event using the SAME transaction
+        // Record payment in immutable event log.
         await addEvent(
             req.params.bookingId,
             'payment_logged',
             {
-                payment_id: payment.id,
+                payment_id: paymentResult.rows[0].id,
                 booking_id: req.params.bookingId,
-                payer_id,
+                payer_participant_id,
                 amount: Number(amount),
-                paid_at
+                paid_at: paymentResult.rows[0].paid_at
             },
             client
         );
 
-        // Commit payment + event together
         await client.query('COMMIT');
 
         res.status(201).json({
-            data: payment
+            data: paymentResult.rows[0]
         });
-
     } catch (err) {
         await client.query('ROLLBACK');
 
         console.error(err);
 
         res.status(400).json({
-            error: 'Failed to create payment — check your input values'
+            error: 'Failed to create payment'
         });
-
     } finally {
         client.release();
     }
 }
-// POST /api/bookings/:bookingId/participants
+
+
+// ============================================================
+// ADD PARTICIPANT TO BOOKING
+// ============================================================
+
 async function addParticipantToBooking(req, res) {
-    const { participant_id } = req.body;
+    const {
+        participant_id
+    } = req.body;
 
     if (!participant_id) {
         return res.status(400).json({
@@ -267,13 +335,15 @@ async function addParticipantToBooking(req, res) {
     try {
         await client.query('BEGIN');
 
-        // Check that booking exists
-        const bookingCheck = await client.query(
-            'SELECT id FROM bookings WHERE id = $1',
+        // Check booking exists.
+        const bookingResult = await client.query(
+            `SELECT id
+             FROM bookings
+             WHERE id = $1`,
             [req.params.bookingId]
         );
 
-        if (bookingCheck.rows.length === 0) {
+        if (bookingResult.rows.length === 0) {
             await client.query('ROLLBACK');
 
             return res.status(404).json({
@@ -281,13 +351,15 @@ async function addParticipantToBooking(req, res) {
             });
         }
 
-        // Check that participant exists
-        const participantCheck = await client.query(
-            'SELECT id FROM participants WHERE id = $1',
+        // Check participant exists.
+        const participantResult = await client.query(
+            `SELECT id
+             FROM participants
+             WHERE id = $1`,
             [participant_id]
         );
 
-        if (participantCheck.rows.length === 0) {
+        if (participantResult.rows.length === 0) {
             await client.query('ROLLBACK');
 
             return res.status(404).json({
@@ -295,7 +367,26 @@ async function addParticipantToBooking(req, res) {
             });
         }
 
-        // Add participant to booking
+        // Check whether participant is already attached.
+        const existingResult = await client.query(
+            `SELECT *
+             FROM booking_participants
+             WHERE booking_id = $1
+               AND participant_id = $2`,
+            [
+                req.params.bookingId,
+                participant_id
+            ]
+        );
+
+        if (existingResult.rows.length > 0) {
+            await client.query('ROLLBACK');
+
+            return res.status(409).json({
+                error: 'Participant is already added to this booking'
+            });
+        }
+
         const result = await client.query(
             `INSERT INTO booking_participants
                 (booking_id, participant_id)
@@ -308,7 +399,7 @@ async function addParticipantToBooking(req, res) {
             ]
         );
 
-        // Create ledger event using the SAME transaction client
+        // Record participant addition in ledger.
         await addEvent(
             req.params.bookingId,
             'participant_added_to_booking',
@@ -324,64 +415,163 @@ async function addParticipantToBooking(req, res) {
         res.status(201).json({
             data: result.rows[0]
         });
-
     } catch (err) {
         await client.query('ROLLBACK');
 
-        // Unique constraint
-        if (err.code === '23505') {
-            return res.status(400).json({
-                error: 'Participant is already part of this booking'
-            });
-        }
-
         console.error(err);
 
-        res.status(500).json({
+        res.status(400).json({
             error: 'Failed to add participant to booking'
         });
-
     } finally {
         client.release();
     }
 }
 
 
-// DELETE /api/bookings/:bookingId/participants/:participantId
+// ============================================================
+// REMOVE PARTICIPANT FROM BOOKING
+// ============================================================
+
 async function removeParticipantFromBooking(req, res) {
+    const {
+        participantId,
+        bookingId
+    } = req.params;
+
+    const client = await pool.connect();
+
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        const result = await client.query(
             `DELETE FROM booking_participants
              WHERE booking_id = $1
-             AND participant_id = $2
-             RETURNING id`,
+               AND participant_id = $2
+             RETURNING *`,
             [
-                req.params.bookingId,
-                req.params.participantId
+                bookingId,
+                participantId
             ]
         );
 
         if (result.rows.length === 0) {
+            await client.query('ROLLBACK');
+
             return res.status(404).json({
-                error: 'This participant is not linked to this booking'
+                error: 'Participant is not part of this booking'
             });
         }
 
-        res.status(200).json({
-            data: {
-                id: result.rows[0].id
-            }
-        });
+        // Record participant removal in ledger.
+        await addEvent(
+            bookingId,
+            'participant_removed_from_booking',
+            {
+                booking_id: bookingId,
+                participant_id: participantId
+            },
+            client
+        );
 
+        await client.query('COMMIT');
+
+        res.status(200).json({
+            message: 'Participant removed from booking',
+            data: result.rows[0]
+        });
     } catch (err) {
+        await client.query('ROLLBACK');
+
         console.error(err);
 
-        res.status(500).json({
+        res.status(400).json({
             error: 'Failed to remove participant from booking'
         });
+    } finally {
+        client.release();
     }
 }
 
+
+// ============================================================
+// CANCEL BOOKING
+// ============================================================
+
+async function cancelBooking(req, res) {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const existingResult = await client.query(
+            `SELECT *
+             FROM bookings
+             WHERE id = $1`,
+            [req.params.id]
+        );
+
+        if (existingResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+
+            return res.status(404).json({
+                error: 'Booking not found'
+            });
+        }
+
+        const existingBooking = existingResult.rows[0];
+
+        if (existingBooking.status === 'cancelled') {
+            await client.query('ROLLBACK');
+
+            return res.status(409).json({
+                error: 'Booking is already cancelled'
+            });
+        }
+
+        const result = await client.query(
+            `UPDATE bookings
+             SET status = 'cancelled'
+             WHERE id = $1
+             RETURNING *`,
+            [req.params.id]
+        );
+
+        // Record cancellation in ledger.
+        await addEvent(
+            req.params.id,
+            'booking_cancelled',
+            {
+                booking_id: req.params.id,
+                previous_status: existingBooking.status,
+                cancelled_at: new Date().toISOString()
+            },
+            client
+        );
+
+        await client.query('COMMIT');
+
+        res.status(200).json({
+            message: 'Booking cancelled successfully',
+            data: result.rows[0]
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+
+        console.error(err);
+
+        res.status(400).json({
+            error: 'Failed to cancel booking'
+        });
+    } finally {
+        client.release();
+    }
+}
+
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 module.exports = {
     getBooking,
@@ -390,5 +580,6 @@ module.exports = {
     listPaymentsForBooking,
     createPaymentForBooking,
     addParticipantToBooking,
-    removeParticipantFromBooking
+    removeParticipantFromBooking,
+    cancelBooking
 };
