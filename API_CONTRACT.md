@@ -60,10 +60,10 @@ Body:
 {
   "name": "Rahul Verma",
   "upi_id": "rahul@upi",
-  "phone" : "9876543210",
-  "role" : "Member"
+  "phone": "9876543210",
+  "role": "Member"
 }
- 
+
 Required fields:
 
 - name
@@ -75,6 +75,7 @@ Optional fields:
 - role
 
 If role is omitted, the backend defaults it to `Member`.
+
 ---
 
 # 3. Trip Bookings
@@ -238,55 +239,15 @@ API errors use this format:
 
 ---
 
-# 10. Frontend Integration Notes
+# 10. Spending Summary
 
-Frontend should use the backend API for:
+## Get spending summary
 
-- Financial calculations
-- Participant shares
-- Refunds
-- Booking cancellations
-- Booking cost changes
-- Settlement calculations
-- UPI payment links
-
-Frontend should mainly handle:
-
-- Forms
-- User interaction
-- Displaying data
-- Calling APIs
-- Loading states
-- Error states
-
-The frontend must not duplicate the Living Ledger,
-recompute financial balances, or implement the settlement algorithm.
-
-The intended data flow is:
-
-USER INPUT
-    ↓
-FRONTEND
-    ↓
-BACKEND API
-    ↓
-LIVING LEDGER / EVENT LOG
-    ↓
-DATABASE
-    ↓
-RECOMPUTATION
-    ↓
-FINANCIAL SUMMARY / SETTLEMENT
-    ↓
-FRONTEND DISPLAY
-
----
-
-### GET /api/trips/:tripId/spending-summary
+GET /api/trips/:tripId/spending-summary
 
 Returns day-by-day trip spending grouped by booking category.
 
-**Response:**
+Response:
 
 ```json
 {
@@ -303,8 +264,105 @@ Returns day-by-day trip spending grouped by booking category.
     }
   ]
 }
+```
 
-# 11. Frontend Environment Variable
+The spending summary is calculated by the backend using the
+effective booking cost after refunds and cancellations.
+
+The frontend should display these values rather than
+recalculating spending itself.
+
+---
+
+# 11. Audit Events
+
+## Get booking event history
+
+GET /api/bookings/:bookingId/events
+
+Returns the immutable event history for a booking.
+
+The response includes:
+
+- Event sequence number
+- Event type
+- Event payload
+- Event creation timestamp
+
+Events may include:
+
+- booking_added
+- participant_added_to_booking
+- participant_removed_from_booking
+- payment_logged
+- refund_issued
+- booking_cancelled
+- booking_cost_modified
+
+The sequence number represents the deterministic order used by
+the Living Ledger when replaying events.
+
+Example response:
+
+{
+  "data": [
+    {
+      "sequence": "17",
+      "event_type": "booking_added",
+      "payload": {
+        "booking_id": "booking-id"
+      },
+      "created_at": "2026-09-04T20:10:24.611Z"
+    }
+  ]
+}
+
+The frontend should use this endpoint to display an audit trail.
+
+It should not modify or reorder ledger events.
+
+---
+
+# 12. Vendor Reconciliation Ledger
+
+## Get vendor ledger
+
+GET /api/trips/:tripId/vendors
+
+Returns vendor-level financial information for the trip.
+
+The response includes:
+
+- Vendor name
+- Total amount billed
+- Amount paid
+- Refund pending
+- Outstanding amount
+
+Example response:
+
+{
+  "trip_id": "11111111-1111-1111-1111-111111111111",
+  "vendors": [
+    {
+      "vendor_name": "ABC Hotel",
+      "total_billed": 5000,
+      "amount_paid": 5000,
+      "refund_pending": 0,
+      "outstanding": 0
+    }
+  ]
+}
+
+The backend derives these values from booking state and
+Living Ledger events.
+
+The frontend should display these values and should not
+recalculate vendor balances itself.
+
+---
+
+# 13. Frontend Environment Variable
 
 Create a `.env.local` file in the frontend project:
 

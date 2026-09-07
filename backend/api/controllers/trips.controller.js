@@ -5,7 +5,11 @@ const { createUpiPaymentLink } = require('../../ledger/upi');
 const { addEvent } = require('../../ledger/eventLog');
 const { getTripSpendingSummary } = require('../../ledger/spendingSummary');
 
+
+// ============================================================
 // GET /api/trips
+// ============================================================
+
 async function listTrips(req, res) {
     try {
         const result = await pool.query(
@@ -25,7 +29,10 @@ async function listTrips(req, res) {
 }
 
 
+// ============================================================
 // GET /api/trips/:id
+// ============================================================
+
 async function getTrip(req, res) {
     try {
         const result = await pool.query(
@@ -51,7 +58,11 @@ async function getTrip(req, res) {
     }
 }
 
+
+// ============================================================
 // GET /api/trips/:tripId/financial-summary
+// ============================================================
+
 async function getTripFinancialSummaryForTrip(req, res) {
     try {
         const tripId = req.params.tripId;
@@ -68,7 +79,11 @@ async function getTripFinancialSummaryForTrip(req, res) {
     }
 }
 
+
+// ============================================================
 // GET /api/trips/:tripId/settlements
+// ============================================================
+
 async function getTripSettlementsForTrip(req, res) {
     try {
         const tripId = req.params.tripId;
@@ -137,7 +152,10 @@ async function getTripSettlementsForTrip(req, res) {
 }
 
 
+// ============================================================
 // POST /api/trips
+// ============================================================
+
 async function createTrip(req, res) {
     const {
         name,
@@ -180,7 +198,10 @@ async function createTrip(req, res) {
 }
 
 
+// ============================================================
 // PUT /api/trips/:id
+// ============================================================
+
 async function updateTrip(req, res) {
     const {
         name,
@@ -233,7 +254,10 @@ async function updateTrip(req, res) {
 }
 
 
+// ============================================================
 // DELETE /api/trips/:id
+// ============================================================
+
 async function deleteTrip(req, res) {
     try {
         const result = await pool.query(
@@ -271,7 +295,10 @@ async function deleteTrip(req, res) {
 }
 
 
+// ============================================================
 // GET /api/trips/:tripId/participants
+// ============================================================
+
 async function listParticipantsForTrip(req, res) {
     try {
         const result = await pool.query(
@@ -295,29 +322,38 @@ async function listParticipantsForTrip(req, res) {
     }
 }
 
+
+// ============================================================
 // GET /api/trips/:tripId/spending-summary
+// ============================================================
+
 async function getSpendingSummary(req, res) {
-  try {
-    const summary = await getTripSpendingSummary(req.params.tripId);
+    try {
+        const summary = await getTripSpendingSummary(req.params.tripId);
 
-    res.status(200).json(summary);
-  } catch (err) {
-    if (err.message && err.message.includes('no trip found')) {
-      return res.status(404).json({
-        error: 'Trip not found'
-      });
+        res.status(200).json(summary);
+
+    } catch (err) {
+
+        if (err.message && err.message.includes('no trip found')) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch spending summary'
+        });
     }
-
-    console.error(err);
-
-    res.status(500).json({
-      error: 'Failed to fetch spending summary'
-    });
-  }
 }
 
 
+// ============================================================
 // POST /api/trips/:tripId/participants
+// ============================================================
+
 async function createParticipantForTrip(req, res) {
     const {
         name,
@@ -372,7 +408,10 @@ async function createParticipantForTrip(req, res) {
 }
 
 
+// ============================================================
 // GET /api/trips/:tripId/bookings
+// ============================================================
+
 async function listBookingsForTrip(req, res) {
     try {
         const result = await pool.query(
@@ -397,12 +436,15 @@ async function listBookingsForTrip(req, res) {
 }
 
 
+// ============================================================
 // POST /api/trips/:tripId/bookings
 // Transaction-safe and event-aware.
 //
 // Booking creation and the booking_added ledger event are performed
 // inside the same database transaction. If either operation fails,
 // both are rolled back.
+// ============================================================
+
 async function createBookingForTrip(req, res) {
 
     const {
@@ -436,6 +478,7 @@ async function createBookingForTrip(req, res) {
     const client = await pool.connect();
 
     try {
+
         await client.query('BEGIN');
 
         // Check whether the trip exists.
@@ -445,6 +488,7 @@ async function createBookingForTrip(req, res) {
         );
 
         if (tripCheck.rows.length === 0) {
+
             await client.query('ROLLBACK');
 
             return res.status(404).json({
@@ -531,7 +575,10 @@ async function createBookingForTrip(req, res) {
 }
 
 
-// Resolves the cost-sharing configuration into a safe format.
+// ============================================================
+// Resolve Cost Sharing
+// ============================================================
+
 function resolveCostSharing(rawCostSharing) {
 
     if (
@@ -565,7 +612,120 @@ function resolveCostSharing(rawCostSharing) {
 }
 
 
+// ============================================================
+// GET VENDOR LEDGER
+// ============================================================
+
+async function getVendorLedger(req, res) {
+
+    try {
+
+        const tripId = req.params.tripId;
+
+        // Check that the trip exists
+        const tripCheck = await pool.query(
+            'SELECT id FROM trips WHERE id = $1',
+            [tripId]
+        );
+
+        if (tripCheck.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        // Get all bookings for the trip
+        const bookingsResult = await pool.query(
+            `SELECT id, vendor_name, total_cost, refundable_amount
+             FROM bookings
+             WHERE trip_id = $1`,
+            [tripId]
+        );
+
+        // Recompute each booking from the event ledger.
+        const { recomputeBooking } =
+            require('../../ledger/recompute');
+
+        const vendors = {};
+
+        for (const booking of bookingsResult.rows) {
+
+            const vendorName = booking.vendor_name;
+
+            if (!vendors[vendorName]) {
+                vendors[vendorName] = {
+                    vendor_name: vendorName,
+                    total_billed: 0,
+                    amount_paid: 0,
+                    refund_pending: 0,
+                    outstanding: 0
+                };
+            }
+
+            const state = await recomputeBooking(booking.id);
+
+            // Calculate total amount paid from the payments object.
+            const amountPaid =
+                Object.values(state.payments || {}).reduce(
+                    (sum, amount) => sum + Number(amount),
+                    0
+                );
+
+            // Refund still pending =
+            // refundable amount - refunds already issued.
+            const refundableAmount =
+                Number(booking.refundable_amount || 0);
+
+            const refundIssued =
+                Number(state.total_refunded || 0);
+
+            const refundPending = state.cancelled
+                ? Math.max(0, refundableAmount - refundIssued)
+                : 0;
+            
+            
+
+            // Outstanding = amount still payable to the vendor.
+            const outstanding = Math.max(
+                0,
+                Number(state.effective_booking_cost || 0)
+                    - amountPaid
+                    + refundIssued
+            );
+
+            vendors[vendorName].total_billed +=
+                Number(booking.total_cost) || 0;
+
+            vendors[vendorName].amount_paid +=
+                amountPaid;
+
+            vendors[vendorName].refund_pending +=
+                refundPending;
+
+            vendors[vendorName].outstanding +=
+                outstanding;
+        }
+
+        res.status(200).json({
+            trip_id: tripId,
+            vendors: Object.values(vendors)
+        });
+
+    } catch (err) {
+
+        console.error('Vendor ledger error:', err);
+
+        res.status(500).json({
+            error: 'Failed to fetch vendor ledger'
+        });
+    }
+}
+
+
+// ============================================================
 // Export controllers
+// ============================================================
+
 module.exports = {
     listTrips,
     getTrip,
@@ -578,6 +738,6 @@ module.exports = {
     createParticipantForTrip,
     listBookingsForTrip,
     createBookingForTrip,
-    getSpendingSummary
-    
+    getSpendingSummary,
+    getVendorLedger
 };

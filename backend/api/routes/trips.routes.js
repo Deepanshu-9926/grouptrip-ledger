@@ -33,6 +33,7 @@ router.get(
 
 //Trip spending summary
 router.get('/:tripId/spending-summary', tripsController.getSpendingSummary);
+router.get('/:tripId/vendors', tripsController.getVendorLedger);
 
 // Participants under a trip
 

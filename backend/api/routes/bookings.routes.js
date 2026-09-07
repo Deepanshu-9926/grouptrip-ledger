@@ -20,4 +20,6 @@ router.delete(
     bookingsController.removeParticipantFromBooking
 );
 
+router.get('/:bookingId/events', bookingsController.getBookingEvents);
+
 module.exports = router;

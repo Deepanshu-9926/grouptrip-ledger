@@ -568,6 +568,45 @@ async function cancelBooking(req, res) {
     }
 }
 
+// ============================================================
+// GET BOOKING EVENTS (AUDIT TRAIL)
+// ============================================================
+
+async function getBookingEvents(req, res) {
+    try {
+        const bookingCheck = await pool.query(
+            `SELECT id
+             FROM bookings
+             WHERE id = $1`,
+            [req.params.bookingId]
+        );
+
+        if (bookingCheck.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Booking not found'
+            });
+        }
+
+        const eventsResult = await pool.query(
+            `SELECT sequence, event_type, payload, created_at
+             FROM events
+             WHERE booking_id = $1
+             ORDER BY sequence ASC`,
+            [req.params.bookingId]
+        );
+
+        res.status(200).json({
+            data: eventsResult.rows
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch booking events'
+        });
+    }
+}
 
 // ============================================================
 // EXPORTS
@@ -581,5 +620,6 @@ module.exports = {
     createPaymentForBooking,
     addParticipantToBooking,
     removeParticipantFromBooking,
-    cancelBooking
+    cancelBooking,
+    getBookingEvents
 };
