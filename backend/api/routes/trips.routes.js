@@ -31,6 +31,9 @@ router.get(
     tripsController.getTripSettlementsForTrip
 );
 
+//Trip spending summary
+router.get('/:tripId/spending-summary', tripsController.getSpendingSummary);
+
 // Participants under a trip
 
 router.get(

@@ -282,6 +282,28 @@ FRONTEND DISPLAY
 
 ---
 
+### GET /api/trips/:tripId/spending-summary
+
+Returns day-by-day trip spending grouped by booking category.
+
+**Response:**
+
+```json
+{
+  "trip_id": "11111111-1111-1111-1111-111111111111",
+  "daily_spending": [
+    {
+      "date": "2026-12-09",
+      "day": 1,
+      "transport": 0,
+      "accommodation": 0,
+      "activities": 0,
+      "other": 0,
+      "total": 0
+    }
+  ]
+}
+
 # 11. Frontend Environment Variable
 
 Create a `.env.local` file in the frontend project:

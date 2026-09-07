@@ -3,7 +3,7 @@ const { getTripSettlements } = require('../../ledger/tripSettlement');
 const { getTripFinancialSummary } = require('../../ledger/tripLedger');
 const { createUpiPaymentLink } = require('../../ledger/upi');
 const { addEvent } = require('../../ledger/eventLog');
-
+const { getTripSpendingSummary } = require('../../ledger/spendingSummary');
 
 // GET /api/trips
 async function listTrips(req, res) {
@@ -295,6 +295,27 @@ async function listParticipantsForTrip(req, res) {
     }
 }
 
+// GET /api/trips/:tripId/spending-summary
+async function getSpendingSummary(req, res) {
+  try {
+    const summary = await getTripSpendingSummary(req.params.tripId);
+
+    res.status(200).json(summary);
+  } catch (err) {
+    if (err.message && err.message.includes('no trip found')) {
+      return res.status(404).json({
+        error: 'Trip not found'
+      });
+    }
+
+    console.error(err);
+
+    res.status(500).json({
+      error: 'Failed to fetch spending summary'
+    });
+  }
+}
+
 
 // POST /api/trips/:tripId/participants
 async function createParticipantForTrip(req, res) {
@@ -556,6 +577,7 @@ module.exports = {
     listParticipantsForTrip,
     createParticipantForTrip,
     listBookingsForTrip,
-    createBookingForTrip
+    createBookingForTrip,
+    getSpendingSummary
     
 };
