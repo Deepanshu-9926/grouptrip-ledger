@@ -1,5 +1,6 @@
 const pool = require('../../db/db');
 const { getTripSettlements } = require('../../ledger/tripSettlement');
+const { getTripFinancialSummary } = require('../../ledger/tripLedger');
 const { createUpiPaymentLink } = require('../../ledger/upi');
 const { addEvent } = require('../../ledger/eventLog');
 
@@ -50,6 +51,22 @@ async function getTrip(req, res) {
     }
 }
 
+// GET /api/trips/:tripId/financial-summary
+async function getTripFinancialSummaryForTrip(req, res) {
+    try {
+        const tripId = req.params.tripId;
+
+        const result = await getTripFinancialSummary(tripId);
+
+        res.status(200).json(result);
+    } catch (err) {
+        console.error('Trip financial summary error:', err);
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
+}
 
 // GET /api/trips/:tripId/settlements
 async function getTripSettlementsForTrip(req, res) {
@@ -535,8 +552,10 @@ module.exports = {
     updateTrip,
     deleteTrip,
     getTripSettlementsForTrip,
+    getTripFinancialSummaryForTrip,
     listParticipantsForTrip,
     createParticipantForTrip,
     listBookingsForTrip,
     createBookingForTrip
+    
 };

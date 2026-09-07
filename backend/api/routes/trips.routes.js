@@ -16,6 +16,14 @@ router.put('/:id', tripsController.updateTrip);
 
 router.delete('/:id', tripsController.deleteTrip);
 
+
+// Trip financial summary
+
+router.get(
+    '/:tripId/financial-summary',
+    tripsController.getTripFinancialSummaryForTrip
+);
+
 // Trip settlements
 
 router.get(
