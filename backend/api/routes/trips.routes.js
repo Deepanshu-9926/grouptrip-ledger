@@ -59,4 +59,7 @@ router.post(
     tripsController.createBookingForTrip
 );
 
+router.post('/:tripId/invites', 
+    tripsController.createTripInvite);
+
 module.exports = router;

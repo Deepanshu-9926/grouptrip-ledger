@@ -37,7 +37,34 @@ CREATE TABLE participants (
     CONSTRAINT participants_role_valid CHECK (role IN ('Organizer', 'Member'))
 );
 
-CREATE INDEX idx_participants_trip_id ON participants(trip_id);
+CREATE INDEX idx_participants_trip_id ON participants(trip_id); 
+
+CREATE TABLE trip_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    trip_id UUID NOT NULL
+        REFERENCES trips(id)
+        ON DELETE CASCADE,
+
+    created_by UUID NOT NULL
+        REFERENCES participants(id)
+        ON DELETE CASCADE,
+
+    token TEXT NOT NULL UNIQUE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    expires_at TIMESTAMPTZ NOT NULL
+        DEFAULT (now() + INTERVAL '7 days'),
+
+    revoked_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_trip_invites_trip_id
+    ON trip_invites(trip_id);
+
+CREATE INDEX idx_trip_invites_token
+    ON trip_invites(token);
 
 -- ------------------------------------------------------------
 -- 3. bookings

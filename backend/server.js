@@ -6,6 +6,7 @@ const tripsRoutes = require('./api/routes/trips.routes');
 const participantsRoutes = require('./api/routes/participants.routes');
 const bookingsRoutes = require('./api/routes/bookings.routes');
 const paymentsRoutes = require('./api/routes/payments.routes');
+const invitesRoutes = require('./api/routes/invites.routes');
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.use('/api/trips', tripsRoutes);
 app.use('/api/participants', participantsRoutes);
 app.use('/api/bookings', bookingsRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/invites', invitesRoutes);
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);

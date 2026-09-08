@@ -1,4 +1,5 @@
 const pool = require('../../db/db');
+const crypto = require('crypto');
 const { getTripSettlements } = require('../../ledger/tripSettlement');
 const { getTripFinancialSummary } = require('../../ledger/tripLedger');
 const { createUpiPaymentLink } = require('../../ledger/upi');
@@ -721,6 +722,91 @@ async function getVendorLedger(req, res) {
     }
 }
 
+// ============================================================
+// POST /api/trips/:tripId/invites
+// ============================================================
+
+async function createTripInvite(req, res) {
+    const { created_by } = req.body;
+    const { tripId } = req.params;
+
+    if (!created_by) {
+        return res.status(400).json({
+            error: 'created_by is required'
+        });
+    }
+
+    try {
+        // Verify that the participant belongs to this trip.
+        const participantResult = await pool.query(
+            `SELECT id, name, role
+             FROM participants
+             WHERE id = $1 AND trip_id = $2`,
+            [created_by, tripId]
+        );
+
+        if (participantResult.rows.length === 0) {
+            return res.status(403).json({
+                error: 'Participant is not a member of this trip'
+            });
+        }
+
+        // Organizer and Member can both create invites.
+        const participant = participantResult.rows[0];
+
+        if (!['Organizer', 'Member'].includes(participant.role)) {
+            return res.status(403).json({
+                error: 'You are not allowed to create an invite'
+            });
+        }
+
+        // Verify that the trip exists.
+        const tripResult = await pool.query(
+            'SELECT id FROM trips WHERE id = $1',
+            [tripId]
+        );
+
+        if (tripResult.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        // Generate a secure random invite token.
+        const token = crypto.randomBytes(32).toString('hex');
+
+        const inviteResult = await pool.query(
+            `INSERT INTO trip_invites
+                (trip_id, created_by, token)
+             VALUES ($1, $2, $3)
+             RETURNING id, trip_id, created_by, token, created_at, expires_at`,
+            [tripId, created_by, token]
+        );
+
+        const frontendUrl =
+            process.env.FRONTEND_URL || 'http://localhost:3000';
+
+        const inviteLink = `${frontendUrl}/join/${token}`;
+
+        res.status(201).json({
+            data: {
+                invite_id: inviteResult.rows[0].id,
+                trip_id: tripId,
+                created_by: participant.id,
+                created_by_name: participant.name,
+                invite_link: inviteLink,
+                expires_at: inviteResult.rows[0].expires_at
+            }
+        });
+
+    } catch (err) {
+        console.error('Create trip invite error:', err);
+
+        res.status(500).json({
+            error: 'Failed to create trip invite'
+        });
+    }
+}
 
 // ============================================================
 // Export controllers
@@ -739,5 +825,6 @@ module.exports = {
     listBookingsForTrip,
     createBookingForTrip,
     getSpendingSummary,
-    getVendorLedger
+    getVendorLedger,
+    createTripInvite
 };

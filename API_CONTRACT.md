@@ -367,3 +367,86 @@ recalculate vendor balances itself.
 Create a `.env.local` file in the frontend project:
 
 NEXT_PUBLIC_API_URL=http://localhost:5000
+
+## Trip Invites
+
+### Create Invite
+
+**POST** `/api/trips/:tripId/invites`
+
+Creates a shareable invite link for a specific trip.
+
+Request body:
+
+```json
+{
+  "created_by": "participant-uuid"
+}
+
+Response `201`:
+
+```json
+{
+  "invite_id": "invite-uuid",
+  "trip_id": "trip-uuid",
+  "invite_link": "http://localhost:3000/join/<token>",
+  "expires_at": "2026-09-15T18:35:51.443Z"
+}
+
+### Get Invite Details
+
+**GET** `/api/invites/:token`
+
+Used by the frontend join page to validate an invite and display the trip information before joining.
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "trip_id": "trip-uuid",
+    "trip_name": "College Trip",
+    "destination": "Manali",
+    "start_date": "2026-12-09",
+    "end_date": "2026-12-14",
+    "expires_at": "2026-09-15T18:35:51.443Z"
+  }
+}
+
+### Join Trip Using Invite
+
+**POST** `/api/invites/:token/join`
+
+Adds a new participant to the trip associated with the invite.
+
+Request body:
+
+```json
+{
+  "name": "Test Member",
+  "phone": "9999999999",
+  "upi_id": "testmember@upi"
+}
+
+Response `201`:
+
+```json
+{
+  "data": {
+    "participant": {},
+    "trip_id": "trip-uuid",
+    "message": "Successfully joined the trip"
+  }
+}
+
+Possible errors:
+
+- `400` — Name, phone, or UPI ID missing
+- `404` — Invite or trip not found
+- `410` — Invite expired or revoked
+
+Important:
+
+Joining a trip through an invite only creates a trip participant. It does not automatically add the participant to any existing booking or activity.
+
+The participant will affect booking costs only when explicitly added to that booking.
