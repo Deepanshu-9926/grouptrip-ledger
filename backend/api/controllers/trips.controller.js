@@ -1,0 +1,743 @@
+const pool = require('../../db/db');
+const { getTripSettlements } = require('../../ledger/tripSettlement');
+const { getTripFinancialSummary } = require('../../ledger/tripLedger');
+const { createUpiPaymentLink } = require('../../ledger/upi');
+const { addEvent } = require('../../ledger/eventLog');
+const { getTripSpendingSummary } = require('../../ledger/spendingSummary');
+
+
+// ============================================================
+// GET /api/trips
+// ============================================================
+
+async function listTrips(req, res) {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM trips ORDER BY created_at DESC'
+        );
+
+        res.status(200).json({
+            data: result.rows
+        });
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch trips'
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:id
+// ============================================================
+
+async function getTrip(req, res) {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM trips WHERE id = $1',
+            [req.params.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        res.status(200).json({
+            data: result.rows[0]
+        });
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch trip'
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:tripId/financial-summary
+// ============================================================
+
+async function getTripFinancialSummaryForTrip(req, res) {
+    try {
+        const tripId = req.params.tripId;
+
+        const result = await getTripFinancialSummary(tripId);
+
+        res.status(200).json(result);
+    } catch (err) {
+        console.error('Trip financial summary error:', err);
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:tripId/settlements
+// ============================================================
+
+async function getTripSettlementsForTrip(req, res) {
+    try {
+        const tripId = req.params.tripId;
+
+        const result = await getTripSettlements(tripId);
+
+        const participantsResult = await pool.query(
+            `SELECT id, name, upi_id
+             FROM participants
+             WHERE trip_id = $1`,
+            [tripId]
+        );
+
+        const participantDetails = {};
+
+        for (const participant of participantsResult.rows) {
+            participantDetails[participant.id] = {
+                name: participant.name,
+                upi_id: participant.upi_id
+            };
+        }
+
+        const settlementsWithDetails = result.settlements.map(
+            (settlement) => {
+
+                const payer = participantDetails[settlement.from];
+                const receiver = participantDetails[settlement.to];
+
+                let upiLink = null;
+
+                if (receiver && receiver.upi_id) {
+                    upiLink = createUpiPaymentLink(
+                        receiver.upi_id,
+                        receiver.name,
+                        settlement.amount
+                    );
+                }
+
+                return {
+                    from: {
+                        id: settlement.from,
+                        name: payer ? payer.name : 'Unknown'
+                    },
+                    to: {
+                        id: settlement.to,
+                        name: receiver ? receiver.name : 'Unknown'
+                    },
+                    amount: settlement.amount,
+                    upi_link: upiLink
+                };
+            }
+        );
+
+        res.status(200).json({
+            trip_id: tripId,
+            settlements: settlementsWithDetails
+        });
+
+    } catch (err) {
+        console.error('Trip settlements error:', err);
+
+        res.status(500).json({
+            error: err.message
+        });
+    }
+}
+
+
+// ============================================================
+// POST /api/trips
+// ============================================================
+
+async function createTrip(req, res) {
+    const {
+        name,
+        destination,
+        start_date,
+        end_date
+    } = req.body;
+
+    if (!name || !destination || !start_date || !end_date) {
+        return res.status(400).json({
+            error: 'name, destination, start_date and end_date are required'
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO trips
+                (name, destination, start_date, end_date)
+             VALUES ($1, $2, $3, $4)
+             RETURNING *`,
+            [
+                name,
+                destination,
+                start_date,
+                end_date
+            ]
+        );
+
+        res.status(201).json({
+            data: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to create trip'
+        });
+    }
+}
+
+
+// ============================================================
+// PUT /api/trips/:id
+// ============================================================
+
+async function updateTrip(req, res) {
+    const {
+        name,
+        destination,
+        start_date,
+        end_date
+    } = req.body;
+
+    if (!name || !destination || !start_date || !end_date) {
+        return res.status(400).json({
+            error: 'name, destination, start_date and end_date are required'
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE trips
+             SET name = $1,
+                 destination = $2,
+                 start_date = $3,
+                 end_date = $4
+             WHERE id = $5
+             RETURNING *`,
+            [
+                name,
+                destination,
+                start_date,
+                end_date,
+                req.params.id
+            ]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        res.status(200).json({
+            data: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to update trip'
+        });
+    }
+}
+
+
+// ============================================================
+// DELETE /api/trips/:id
+// ============================================================
+
+async function deleteTrip(req, res) {
+    try {
+        const result = await pool.query(
+            'DELETE FROM trips WHERE id = $1 RETURNING id',
+            [req.params.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        res.status(200).json({
+            data: {
+                id: result.rows[0].id
+            }
+        });
+
+    } catch (err) {
+
+        // Foreign key violation
+        if (err.code === '23503') {
+            return res.status(400).json({
+                error: 'Cannot delete trip: related records (e.g. payments) still reference it'
+            });
+        }
+
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to delete trip'
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:tripId/participants
+// ============================================================
+
+async function listParticipantsForTrip(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT *
+             FROM participants
+             WHERE trip_id = $1
+             ORDER BY created_at ASC`,
+            [req.params.tripId]
+        );
+
+        res.status(200).json({
+            data: result.rows
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch participants'
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:tripId/spending-summary
+// ============================================================
+
+async function getSpendingSummary(req, res) {
+    try {
+        const summary = await getTripSpendingSummary(req.params.tripId);
+
+        res.status(200).json(summary);
+
+    } catch (err) {
+
+        if (err.message && err.message.includes('no trip found')) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch spending summary'
+        });
+    }
+}
+
+
+// ============================================================
+// POST /api/trips/:tripId/participants
+// ============================================================
+
+async function createParticipantForTrip(req, res) {
+    const {
+        name,
+        phone,
+        upi_id,
+        role
+    } = req.body;
+
+    if (!name || !phone) {
+        return res.status(400).json({
+            error: 'name and phone are required'
+        });
+    }
+
+    try {
+        const tripCheck = await pool.query(
+            'SELECT id FROM trips WHERE id = $1',
+            [req.params.tripId]
+        );
+
+        if (tripCheck.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO participants
+                (trip_id, name, phone, upi_id, role)
+             VALUES ($1, $2, $3, $4, COALESCE($5, 'Member'))
+             RETURNING *`,
+            [
+                req.params.tripId,
+                name,
+                phone,
+                upi_id || null,
+                role
+            ]
+        );
+
+        res.status(201).json({
+            data: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to create participant'
+        });
+    }
+}
+
+
+// ============================================================
+// GET /api/trips/:tripId/bookings
+// ============================================================
+
+async function listBookingsForTrip(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT *
+             FROM bookings
+             WHERE trip_id = $1
+             ORDER BY booking_datetime ASC`,
+            [req.params.tripId]
+        );
+
+        res.status(200).json({
+            data: result.rows
+        });
+
+    } catch (err) {
+        console.error(err);
+
+        res.status(500).json({
+            error: 'Failed to fetch bookings'
+        });
+    }
+}
+
+
+// ============================================================
+// POST /api/trips/:tripId/bookings
+// Transaction-safe and event-aware.
+//
+// Booking creation and the booking_added ledger event are performed
+// inside the same database transaction. If either operation fails,
+// both are rolled back.
+// ============================================================
+
+async function createBookingForTrip(req, res) {
+
+    const {
+        category,
+        vendor_name,
+        total_cost,
+        booking_datetime,
+        refund_policy,
+        refundable_amount,
+        cancellation_deadline,
+        status,
+        cost_sharing
+    } = req.body;
+
+    if (
+        !category ||
+        !vendor_name ||
+        total_cost === undefined ||
+        !booking_datetime
+    ) {
+        return res.status(400).json({
+            error: 'category, vendor_name, total_cost and booking_datetime are required'
+        });
+    }
+
+    // Resolve cost-sharing configuration.
+    // Missing or invalid configuration falls back to equal split.
+    const resolvedCostSharing =
+        resolveCostSharing(cost_sharing);
+
+    const client = await pool.connect();
+
+    try {
+
+        await client.query('BEGIN');
+
+        // Check whether the trip exists.
+        const tripCheck = await client.query(
+            'SELECT id FROM trips WHERE id = $1',
+            [req.params.tripId]
+        );
+
+        if (tripCheck.rows.length === 0) {
+
+            await client.query('ROLLBACK');
+
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        // Create booking.
+        const bookingResult = await client.query(
+            `INSERT INTO bookings
+                (
+                    trip_id,
+                    category,
+                    vendor_name,
+                    total_cost,
+                    booking_datetime,
+                    refund_policy,
+                    refundable_amount,
+                    cancellation_deadline,
+                    status
+                )
+             VALUES
+                (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    COALESCE($6, 'non_refundable'),
+                    COALESCE($7, 0),
+                    $8,
+                    COALESCE($9, 'active')
+                )
+             RETURNING *`,
+            [
+                req.params.tripId,
+                category,
+                vendor_name,
+                total_cost,
+                booking_datetime,
+                refund_policy,
+                refundable_amount,
+                cancellation_deadline || null,
+                status
+            ]
+        );
+
+        const newBooking = bookingResult.rows[0];
+
+        // Create the corresponding ledger event using
+        // the SAME transaction client.
+        await addEvent(
+            newBooking.id,
+            'booking_added',
+            {
+                booking_id: newBooking.id,
+                cost_sharing: resolvedCostSharing
+            },
+            client
+        );
+
+        // Only commit after both booking and event succeed.
+        await client.query('COMMIT');
+
+        res.status(201).json({
+            data: newBooking
+        });
+
+    } catch (err) {
+
+        // If anything failed, remove the booking and event
+        // created during this transaction.
+        await client.query('ROLLBACK');
+
+        console.error(err);
+
+        res.status(400).json({
+            error: 'Failed to create booking — check your input values'
+        });
+
+    } finally {
+        client.release();
+    }
+}
+
+
+// ============================================================
+// Resolve Cost Sharing
+// ============================================================
+
+function resolveCostSharing(rawCostSharing) {
+
+    if (
+        !rawCostSharing ||
+        typeof rawCostSharing !== 'object'
+    ) {
+        return {
+            mode: 'equal'
+        };
+    }
+
+    if (rawCostSharing.mode === 'tiered') {
+
+        const weights =
+            (
+                rawCostSharing.weights &&
+                typeof rawCostSharing.weights === 'object'
+            )
+                ? rawCostSharing.weights
+                : {};
+
+        return {
+            mode: 'tiered',
+            weights
+        };
+    }
+
+    return {
+        mode: 'equal'
+    };
+}
+
+
+// ============================================================
+// GET VENDOR LEDGER
+// ============================================================
+
+async function getVendorLedger(req, res) {
+
+    try {
+
+        const tripId = req.params.tripId;
+
+        // Check that the trip exists
+        const tripCheck = await pool.query(
+            'SELECT id FROM trips WHERE id = $1',
+            [tripId]
+        );
+
+        if (tripCheck.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Trip not found'
+            });
+        }
+
+        // Get all bookings for the trip
+        const bookingsResult = await pool.query(
+            `SELECT id, vendor_name, total_cost, refundable_amount
+             FROM bookings
+             WHERE trip_id = $1`,
+            [tripId]
+        );
+
+        // Recompute each booking from the event ledger.
+        const { recomputeBooking } =
+            require('../../ledger/recompute');
+
+        const vendors = {};
+
+        for (const booking of bookingsResult.rows) {
+
+            const vendorName = booking.vendor_name;
+
+            if (!vendors[vendorName]) {
+                vendors[vendorName] = {
+                    vendor_name: vendorName,
+                    total_billed: 0,
+                    amount_paid: 0,
+                    refund_pending: 0,
+                    outstanding: 0
+                };
+            }
+
+            const state = await recomputeBooking(booking.id);
+
+            // Calculate total amount paid from the payments object.
+            const amountPaid =
+                Object.values(state.payments || {}).reduce(
+                    (sum, amount) => sum + Number(amount),
+                    0
+                );
+
+            // Refund still pending =
+            // refundable amount - refunds already issued.
+            const refundableAmount =
+                Number(booking.refundable_amount || 0);
+
+            const refundIssued =
+                Number(state.total_refunded || 0);
+
+            const refundPending = state.cancelled
+                ? Math.max(0, refundableAmount - refundIssued)
+                : 0;
+            
+            
+
+            // Outstanding = amount still payable to the vendor.
+            const outstanding = Math.max(
+                0,
+                Number(state.effective_booking_cost || 0)
+                    - amountPaid
+                    + refundIssued
+            );
+
+            vendors[vendorName].total_billed +=
+                Number(booking.total_cost) || 0;
+
+            vendors[vendorName].amount_paid +=
+                amountPaid;
+
+            vendors[vendorName].refund_pending +=
+                refundPending;
+
+            vendors[vendorName].outstanding +=
+                outstanding;
+        }
+
+        res.status(200).json({
+            trip_id: tripId,
+            vendors: Object.values(vendors)
+        });
+
+    } catch (err) {
+
+        console.error('Vendor ledger error:', err);
+
+        res.status(500).json({
+            error: 'Failed to fetch vendor ledger'
+        });
+    }
+}
+
+
+// ============================================================
+// Export controllers
+// ============================================================
+
+module.exports = {
+    listTrips,
+    getTrip,
+    createTrip,
+    updateTrip,
+    deleteTrip,
+    getTripSettlementsForTrip,
+    getTripFinancialSummaryForTrip,
+    listParticipantsForTrip,
+    createParticipantForTrip,
+    listBookingsForTrip,
+    createBookingForTrip,
+    getSpendingSummary,
+    getVendorLedger
+};

@@ -2,7 +2,7 @@ export const removeParticipantTool = {
   type: "function" as const,
   name: "remove_participant",
   description:
-    "Remove a participant from a trip when they are leaving or opting out of the trip.",
+    "Remove a participant from a specific booking when they are leaving or opting out.",
   strict: true,
   parameters: {
     type: "object",
@@ -15,12 +15,16 @@ export const removeParticipantTool = {
         type: "string",
         description: "The name of the participant who is leaving.",
       },
+      booking_title: {
+        type: "string",
+        description: "The name or title of the booking to remove the participant from.",
+      },
       reason: {
         type: "string",
         description: "Why the participant is being removed.",
       },
     },
-    required: ["trip_id", "participant_name", "reason"],
+    required: ["trip_id", "participant_name", "booking_title", "reason"],
     additionalProperties: false,
   },
 };

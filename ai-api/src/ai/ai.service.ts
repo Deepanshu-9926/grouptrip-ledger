@@ -22,8 +22,13 @@ function getOperationMessage(
   language: LanguagePreference,
   action: string,
   args: Record<string, unknown>,
-  fallbackMessage: string
+  fallbackMessage: string,
+  success: boolean
 ): string {
+  if (!success) {
+    return fallbackMessage;
+  }
+  
   if (language === "en") {
     return fallbackMessage;
   }
@@ -246,7 +251,8 @@ ${normalizedMessage}
       language,
       functionCall.name,
       args,
-      executionResult.message
+      executionResult.message,
+      executionResult.success
     ),
   };
 }

@@ -15,16 +15,16 @@ export const logPaymentTool = {
         type: "string",
         description: "The participant who made the payment.",
       },
+      booking_title: {
+        type: "string",
+        description: "The name or title of the booking the payment is for.",
+      },
       amount: {
         type: "number",
         description: "Amount paid.",
       },
-      description: {
-        type: "string",
-        description: "What the payment was for.",
-      },
     },
-    required: ["trip_id", "participant_name", "amount", "description"],
+    required: ["trip_id", "participant_name", "booking_title", "amount"],
     additionalProperties: false,
   },
 };

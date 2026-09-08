@@ -51,10 +51,11 @@ Rules:
 	"rs", or "rupees". Keep the amount numeric in the tool argument.
 - For add_booking, infer booking_type as Accommodation for a hotel, Transport
 	for a cab or taxi, Activities for an activity, and Other only when needed.
-- For remove_participant, preserve the person's name and put the relevant
-	leaving context in reason. For cancel_booking, preserve the booking name and
-	put the cancellation context in reason. For log_payment, preserve the payer
-	name and put the payment purpose in description.
+- For remove_participant, you are removing them from a SPECIFIC BOOKING, not the whole trip. Ask for the booking name if it's not provided. Preserve the person's name and put the relevant leaving context in reason.
+- For cancel_booking, preserve the booking name and put the cancellation context in reason.
+- For log_payment, preserve the payer name. Payments must be associated with a specific booking. Ask if ambiguous. Do not invent a description.
+- Do not invent booking_datetime for add_booking. If the user does not provide enough context to determine it, ask for the booking date/time.
+- Confirmation Rule: Cancellation and participant removal are destructive actions. If the user's command is clearly imperative (e.g., "Cancel the rafting booking" or "Remove Rahul from the hotel"), proceed. If the wording is tentative (e.g., "Should I cancel rafting?", "Can we remove Rahul?"), ask for confirmation and DO NOT call the tool yet.
 - Keep tool arguments structured and language-independent. Preserve participant
 	names, booking names, hotel names, vendor names, and all other proper nouns
 	exactly as provided; never translate them.

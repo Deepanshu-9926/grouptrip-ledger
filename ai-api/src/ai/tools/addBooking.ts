@@ -24,6 +24,10 @@ export const addBookingTool = {
         type: "number",
         description: "Total booking amount.",
       },
+      booking_datetime: {
+        type: "string",
+        description: "The date and time of the booking in ISO 8601 format (e.g., '2026-10-15T10:00:00Z'). If not explicitly specified by the user, ask for it.",
+      },
       participant_names: {
         type: "array",
         items: {
@@ -37,6 +41,7 @@ export const addBookingTool = {
       "booking_type",
       "title",
       "amount",
+      "booking_datetime",
       "participant_names",
     ],
     additionalProperties: false,
